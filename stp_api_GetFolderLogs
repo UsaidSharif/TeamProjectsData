@@ -1,0 +1,151 @@
+IF  EXISTS (SELECT 1 FROM sys.objects WHERE object_id = OBJECT_ID(N'[dbo].[stp_api_GetFolderLogs]') AND type in (N'P', N'PC'))
+DROP PROCEDURE [dbo].stp_api_GetFolderLogs
+GO
+SET ANSI_NULLS OFF
+GO
+SET QUOTED_IDENTIFIER OFF
+GO
+/*
+======================================================================================
+Creation Purpose  : Get Folder Logs For DocumentManager
+Created By :Usaid Sharif
+Team : ProviderNotes
+Date : 05/29/2024
+*/
+CREATE PROCEDURE [dbo].stp_api_GetFolderLogs  --1,22,1,'date','desc'
+@PageNumber INT,
+@PageSize INT,
+@PracticeId INT,
+@UserId INT,
+@LocationId INT,
+@SortingColumn varchar(100),
+@SortingOrder varchar(50)
+AS
+Begin
+	SET NOCOUNT ON;
+	DECLARE @DisplayFormat VARCHAR(255) = NULL;
+    -- Check cmusxhd_locale_settings
+    SELECT @DisplayFormat =NameDisplayFormat from [dbo].udf_get_app_localization_settings(@userId)
+
+	IF @SortingColumn IS NULL OR @SortingOrder IS NULL
+	BEGIN
+		RETURN;
+	END
+
+	DECLARE @start_index INT = (@PageNumber - 1) * @PageSize;
+
+	SELECT * FROM (
+    SELECT ROW_NUMBER() OVER(
+        ORDER BY 
+		    CASE 
+                    WHEN @SortingColumn = 'FolderName' AND @SortingOrder = 'ASC' THEN 
+                        CASE 
+                            WHEN FAL.Action = 5 THEN 
+                                FALR.OldFolderName
+                            ELSE 
+                                CASE 
+                                    WHEN LFI.SubFolderName IS NOT NULL AND LFI.SubFolderName <> '' THEN LFI.SubFolderName 
+                                    ELSE LFI.FolderName 
+                                END 
+                        END 
+                END ASC,
+                CASE 
+                    WHEN @SortingColumn = 'FolderName' AND @SortingOrder = 'DESC' THEN 
+                        CASE 
+                            WHEN FAL.Action = 5 THEN 
+                                FALR.OldFolderName
+                            ELSE 
+                                CASE 
+                                    WHEN LFI.SubFolderName IS NOT NULL AND LFI.SubFolderName <> '' THEN LFI.SubFolderName 
+                                    ELSE LFI.FolderName 
+                                END 
+                        END 
+                END DESC,
+			CASE WHEN @SortingColumn = 'Patient' THEN 
+			CASE @SortingOrder
+				WHEN 'ASC' THEN 
+					CASE 
+						WHEN LFI.IsForAllPatients = 1 AND (FAL.PatientId is null OR FAL.PatientId = 0) THEN 1
+						WHEN P.VLNAME IS NULL OR P.IPATID = 0 THEN 3 
+						ELSE 2 
+					END
+				WHEN 'DESC' THEN 
+					CASE 
+						WHEN LFI.IsForAllPatients = 1 AND (FAL.PatientId is null OR FAL.PatientId = 0) THEN 3
+						WHEN P.VLNAME IS NULL OR P.IPATID = 0 THEN 1 
+						ELSE 2 
+					END
+			END
+		END,
+
+		--CASE WHEN @SortingColumn = 'Patient' AND @SortingOrder = 'ASC' AND P.VLNAME IS NOT NULL THEN P.VLNAME END ASC,
+		--CASE WHEN @SortingColumn = 'Patient' AND @SortingOrder = 'DESC' AND P.VLNAME IS NOT NULL THEN P.VLNAME END DESC,
+
+		CASE WHEN @SortingColumn = 'Patient' AND @SortingOrder = 'ASC' THEN REPLACE(REPLACE(REPLACE(@DisplayFormat, '{First Name}', LTRIM(P.VFNAME)), '{Last Name}', LTRIM(P.VLNAME)), ',', '') END ASC,
+		CASE WHEN @SortingColumn = 'Patient' AND @SortingOrder = 'DESC' THEN REPLACE(REPLACE(REPLACE(@DisplayFormat, '{First Name}', LTRIM(P.VFNAME)), '{Last Name}', LTRIM(P.VLNAME)), ',', '') END DESC,
+        CASE WHEN @SortingColumn = 'Action' AND @SortingOrder = 'ASC' THEN FAL.Action END ASC,
+        CASE WHEN @SortingColumn = 'Action' AND @SortingOrder = 'DESC' THEN FAL.Action END DESC,
+
+        --CASE WHEN @SortingColumn = 'ActionBy' AND @SortingOrder = 'ASC' THEN U.VLNAME END ASC,
+        --CASE WHEN @SortingColumn = 'ActionBy' AND @SortingOrder = 'DESC' THEN U.VLNAME END DESC,
+				
+		CASE WHEN @SortingColumn = 'ActionBy' AND @SortingOrder = 'ASC' THEN REPLACE(REPLACE(REPLACE(@DisplayFormat, '{First Name}', LTRIM(U.VFNAME)), '{Last Name}', LTRIM(U.VLNAME)), ',', '') END ASC, 
+		CASE WHEN @SortingColumn = 'ActionBy' AND @SortingOrder = 'DESC' THEN REPLACE(REPLACE(REPLACE(@DisplayFormat, '{First Name}', LTRIM(U.VFNAME)), '{Last Name}', LTRIM(U.VLNAME)), ',', '') END DESC,
+
+        CASE WHEN @SortingColumn = 'Date' AND @SortingOrder = 'ASC' THEN FAL.LogDateUTC END ASC,
+        CASE WHEN @SortingColumn = 'Date' AND @SortingOrder = 'DESC' THEN FAL.LogDateUTC END DESC
+
+    ) AS RowNumber, 
+    COUNT(*) OVER() as TotalRecords,
+    FAL.LogId, FAL.Action, U.VFNAME AS UserFirstName, U.VLNAME AS UserLastName,
+	CASE 
+		WHEN LFI.IsForAllPatients = 1 AND (FAL.PatientId IS NULL OR FAL.PatientId = 0) THEN CAST(1 AS BIT)
+		ELSE CAST(0 AS BIT)
+    END AS IsForAllPatients,
+	--CASE
+	--WHEN LFI.FolderName <> '' THEN LFI.FolderName
+	--WHEN LFI.FolderName ='' AND LFI.SubFolderName<>'' THEN LFI.SubFolderName
+	--ELSE '' END AS FolderName,
+	CASE WHEN LFI.SubFolderName IS NOT NULL AND LFI.SubFolderName <> '' THEN LFI.SubFolderName ELSE LFI.FolderName END as FolderName,
+
+	FAL.FolderId,LFI.IsSystemFolder,
+    FAL.LogDateUTC, FALR.NewFolderName, FALR.OldFolderName,
+    CASE 
+        WHEN LFI.IsForAllPatients = 1 AND (FAL.PatientId is null OR FAL.PatientId = 0) THEN 'All'
+        WHEN P.IPATID = 0 THEN ''
+        ELSE P.VLNAME END AS PatientLastName, 
+		P.VFNAME AS PatientFirstName,
+		REPLACE(REPLACE(REPLACE(@DisplayFormat, '{First Name}', LTRIM(P.VFNAME)), '{Last Name}', LTRIM(P.VLNAME)), ',', '') AS FormattedPatientName,
+        P.VTITLE as PatientTitle,    
+        P.VAccNo as PatientAccountNumber,    
+        P.bInactive as InActivePatient,    
+        P.DDOB as PatientDateOfBirth,    
+        P.VSEX as Gender,
+		 (
+		 CASE
+			WHEN EXISTS(SELECT TOP 1 1 FROM phonetypes WHERE IEntity_ID = P.IPATID AND VPhone_Type = 'Mobile')
+			THEN (SELECT TOP 1 VPhone_Value FROM phonetypes WHERE IEntity_ID = P.IPATID AND VPhone_Type = 'Mobile')
+			WHEN EXISTS(SELECT TOP 1 1 FROM phonetypes WHERE IEntity_ID = P.IPATID AND VPhone_Type = 'Home')
+			THEN (SELECT TOP 1 VPhone_Value FROM phonetypes WHERE IEntity_ID = P.IPATID AND VPhone_Type = 'Home')
+			WHEN EXISTS(SELECT TOP 1 1 FROM phonetypes WHERE IEntity_ID = P.IPATID AND VPhone_Type = 'Office Ph')
+			THEN (SELECT TOP 1 VPhone_Value FROM phonetypes WHERE IEntity_ID = P.IPATID AND VPhone_Type = 'Office Ph')
+			ELSE ''
+         END
+            ) as PhoneNumber,   
+        CASE    
+            WHEN P.iFlagReasonID <> 0 OR FR.vFlagClearReason IS NOT NULL THEN 1    
+            ELSE 0    
+        END as isRedFlagged
+    FROM DM_FolderActionLogs FAL WITH(NOLOCK)
+    LEFT JOIN DM_LogsFolderInfo LFI WITH(NOLOCK) ON LFI.LogId = FAL.LogId
+    LEFT JOIN DM_FolderActionLogs_Rename FALR WITH(NOLOCK) ON FALR.LogId = FAL.LogId
+    LEFT JOIN PMPTXFT P WITH(NOLOCK) ON FAL.PatientId = P.IPATID
+	LEFT JOIN FlagReasons FR WITH (NOLOCK) ON P.iFlagReasonID = FR.iReasonID
+    LEFT JOIN CMUSXHD U WITH(NOLOCK) ON U.IUSERID = FAL.UserId
+    WHERE FAL.PracticeId = @PracticeId
+	) AS paged_results
+	WHERE paged_results.RowNumber BETWEEN @start_index + 1 AND @start_index + @PageSize;
+End
+GO
+Grant Execute ON [dbo].stp_api_GetFolderLogs TO [CureMD_Role]
+GO
